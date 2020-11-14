@@ -69,9 +69,9 @@ func NewBranca(key string) (b *Branca) {
 	}
 }
 
-// EncodeToString encodes the data matching the format:
+// EncodeBinary encodes the data matching the format:
 // Version (byte) || Timestamp ([4]byte) || Nonce ([24]byte) || Ciphertext ([]byte) || Tag ([16]byte)
-func (b *Branca) EncodeToString(data string) (string, error) {
+func (b *Branca) EncodeBinary(data []byte) (string, error) {
 	var timestamp uint32
 	var nonce []byte
 	if b.timestamp == 0 {
@@ -93,7 +93,6 @@ func (b *Branca) EncodeToString(data string) (string, error) {
 	}
 
 	key := bytes.NewBufferString(b.Key).Bytes()
-	payload := bytes.NewBufferString(data).Bytes()
 
 	timeBuffer := make([]byte, 4)
 	binary.BigEndian.PutUint32(timeBuffer, timestamp)
@@ -105,7 +104,7 @@ func (b *Branca) EncodeToString(data string) (string, error) {
 		return "", ErrBadKeyLength
 	}
 
-	ciphertext := xchacha.Seal(nil, nonce, payload, header)
+	ciphertext := xchacha.Seal(nil, nonce, data, header)
 
 	token := append(header, ciphertext...)
 	base62, err := basex.NewEncoding(base62)
@@ -115,18 +114,23 @@ func (b *Branca) EncodeToString(data string) (string, error) {
 	return base62.Encode(token), nil
 }
 
-// DecodeToString decodes the data.
-func (b *Branca) DecodeToString(data string) (string, error) {
+// EncodeToString encodes the string data.
+func (b *Branca) EncodeToString(data string) (string, error) {
+	return b.EncodeBinary(bytes.NewBufferString(data).Bytes())
+}
+
+// DecodeToBinary decodes the data.
+func (b *Branca) DecodeToBinary(data string) ([]byte, error) {
 	if len(data) < 62 {
-		return "", fmt.Errorf("%w: length is less than 62", ErrInvalidToken)
+		return nil, fmt.Errorf("%w: length is less than 62", ErrInvalidToken)
 	}
 	base62, err := basex.NewEncoding(base62)
 	if err != nil {
-		return "", fmt.Errorf("%v", err)
+		return nil, fmt.Errorf("%v", err)
 	}
 	token, err := base62.Decode(data)
 	if err != nil {
-		return "", ErrInvalidToken
+		return nil, ErrInvalidToken
 	}
 	header := token[:29]
 	ciphertext := token[29:]
@@ -135,26 +139,36 @@ func (b *Branca) DecodeToString(data string) (string, error) {
 	nonce := header[5:]
 
 	if tokenversion != version {
-		return "", fmt.Errorf("%w: got %#X but expected %#X", ErrInvalidTokenVersion, tokenversion, version)
+		return nil, fmt.Errorf("%w: got %#X but expected %#X", ErrInvalidTokenVersion, tokenversion, version)
 	}
 
 	key := bytes.NewBufferString(b.Key).Bytes()
 
 	xchacha, err := chacha20poly1305.NewX(key)
 	if err != nil {
-		return "", ErrBadKeyLength
+		return nil, ErrBadKeyLength
 	}
 	payload, err := xchacha.Open(nil, nonce, ciphertext, header)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if b.ttl != 0 {
 		future := int64(timestamp + b.ttl)
 		now := time.Now().Unix()
 		if future < now {
-			return "", &ErrExpiredToken{Time: time.Unix(future, 0)}
+			return nil, &ErrExpiredToken{Time: time.Unix(future, 0)}
 		}
+	}
+
+	return payload, nil
+}
+
+// DecodeToString decodes the data to string.
+func (b *Branca) DecodeToString(data string) (string, error) {
+	payload, err := b.DecodeToBinary(data)
+	if err != nil {
+		return "", err
 	}
 
 	payloadString := bytes.NewBuffer(payload).String()
